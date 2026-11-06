@@ -381,8 +381,10 @@ static int Control( demux_t *p_demux, int i_query, va_list args )
             {
                 const int i_edition = p_sys->p_current_vsegment->i_current_edition;
                 const int i_title = p_sys->i_current_title;
+                const int i_sys_title = p_sys->p_current_vsegment->i_sys_title;
                 p_sys->p_current_vsegment->i_current_edition = i_idx;
                 p_sys->i_current_title = i_idx;
+                p_sys->p_current_vsegment->i_sys_title = i_idx;
                 if( VLC_SUCCESS ==
                     Seek( p_demux, static_cast<int64_t>( p_sys->titles[i_idx]->seekpoint[0]->i_time_offset ), -1, NULL) )
                 {
@@ -396,6 +398,7 @@ static int Control( demux_t *p_demux, int i_query, va_list args )
                 {
                     p_sys->p_current_vsegment->i_current_edition = i_edition;
                     p_sys->i_current_title = i_title;
+                    p_sys->p_current_vsegment->i_sys_title = i_sys_title;
                 }
             }
             return VLC_EGENERIC;
