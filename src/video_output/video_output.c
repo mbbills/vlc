@@ -340,7 +340,8 @@ bool vout_IsEmpty(vout_thread_t *vout)
     if (picture)
         picture_Release(picture);
 
-    return !picture;
+    /* A picture out of the FIFO but still waiting for its date is not presented */
+    return !picture && !atomic_load(&vout->p->displayed.next_pending);
 }
 
 void vout_NextPicture(vout_thread_t *vout, vlc_tick_t *duration)
@@ -710,6 +711,7 @@ static void ThreadFilterFlush(vout_thread_t *vout, bool is_locked)
     if (vout->p->displayed.next)
         picture_Release( vout->p->displayed.next );
     vout->p->displayed.next = NULL;
+    atomic_store(&vout->p->displayed.next_pending, false);
 
     if (!is_locked)
         vlc_mutex_lock(&vout->p->filter.lock);
@@ -849,6 +851,9 @@ static int ThreadDisplayPreparePicture(vout_thread_t *vout, bool reuse, bool fra
 {
     bool is_late_dropped = vout->p->is_late_dropped && !vout->p->pause.is_on && !frame_by_frame;
 
+    /* Set before leaving the FIFO empty, so that vout_IsEmpty() can't miss it */
+    atomic_store(&vout->p->displayed.next_pending, true);
+
     vlc_mutex_lock(&vout->p->filter.lock);
 
     picture_t *picture = filter_chain_VideoFilter(vout->p->filter.chain_static, NULL);
@@ -899,13 +904,16 @@ static int ThreadDisplayPreparePicture(vout_thread_t *vout, bool reuse, bool fra
 
     vlc_mutex_unlock(&vout->p->filter.lock);
 
-    if (!picture)
+    if (!picture) {
+        atomic_store(&vout->p->displayed.next_pending, false);
         return VLC_EGENERIC;
+    }
 
     assert(!vout->p->displayed.next);
-    if (!vout->p->displayed.current)
+    if (!vout->p->displayed.current) {
         vout->p->displayed.current = picture;
-    else
+        atomic_store(&vout->p->displayed.next_pending, false);
+    } else
         vout->p->displayed.next    = picture;
     return VLC_SUCCESS;
 }
@@ -1240,6 +1248,7 @@ static int ThreadDisplayPicture(vout_thread_t *vout, vlc_tick_t *deadline)
         picture_Release(vout->p->displayed.current);
         vout->p->displayed.current = vout->p->displayed.next;
         vout->p->displayed.next    = NULL;
+        atomic_store(&vout->p->displayed.next_pending, false);
     }
 
     if (!vout->p->displayed.current)
@@ -1541,6 +1550,7 @@ static int ThreadStart(vout_thread_t *vout, vout_display_state_t *state)
 
     vout->p->displayed.current       = NULL;
     vout->p->displayed.next          = NULL;
+    atomic_init(&vout->p->displayed.next_pending, false);
     vout->p->displayed.decoded       = NULL;
     vout->p->displayed.date          = VLC_TICK_INVALID;
     vout->p->displayed.timestamp     = VLC_TICK_INVALID;

@@ -25,6 +25,7 @@
 #ifndef LIBVLC_VOUT_INTERNAL_H
 #define LIBVLC_VOUT_INTERNAL_H 1
 
+#include <vlc_atomic.h>
 #include <vlc_picture_fifo.h>
 #include <vlc_picture_pool.h>
 #include <vlc_vout_display.h>
@@ -90,6 +91,7 @@ struct vout_thread_sys_t
         picture_t   *decoded;
         picture_t   *current;
         picture_t   *next;
+        atomic_bool  next_pending;
     } displayed;
 
     struct {
