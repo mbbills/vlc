@@ -804,7 +804,7 @@ bool matroska_segment_c::LoadSeekHeadItem( const EbmlCallbacks & ClassInfos, int
     return true;
 }
 
-bool matroska_segment_c::Seek( demux_t &demuxer, vlc_tick_t i_absolute_mk_date, vlc_tick_t i_mk_time_offset, bool b_accurate )
+bool matroska_segment_c::Seek( demux_t &demuxer, vlc_tick_t i_absolute_mk_date, vlc_tick_t i_mk_time_offset, bool b_accurate, bool b_continuation )
 {
     SegmentSeeker::tracks_seekpoint_t seekpoints;
 
@@ -820,10 +820,15 @@ bool matroska_segment_c::Seek( demux_t &demuxer, vlc_tick_t i_absolute_mk_date, 
     {
         mkv_track_t &track = *it->second;
 
-        track.i_skip_until_fpos = std::numeric_limits<uint64_t>::max();
-        if( track.i_last_dts > VLC_TICK_INVALID )
-            track.b_discontinuity = true;
-        track.i_last_dts        = VLC_TICK_INVALID;
+        if( !b_continuation )
+        {
+            track.i_skip_until_fpos = std::numeric_limits<uint64_t>::max();
+            if( track.i_last_dts > VLC_TICK_INVALID )
+                track.b_discontinuity = true;
+            track.i_last_dts        = VLC_TICK_INVALID;
+            track.b_chapter_end     = false;
+            track.i_continuation_start = VLC_TICK_INVALID;
+        }
 
         bool selected;
         if (track.p_es == NULL)
@@ -850,13 +855,39 @@ bool matroska_segment_c::Seek( demux_t &demuxer, vlc_tick_t i_absolute_mk_date, 
 
     // find appropriate seekpoints //
 
+    // block timestamps are rounded to the timestamp scale, chapter times are not
+    const vlc_tick_t i_margin = b_continuation ? VLC_TICK_FROM_NS( i_timescale ) : 0;
+
     try {
-        seekpoints = _seeker.get_seekpoints( *this, i_mk_date, priority, selected_tracks );
+        seekpoints = _seeker.get_seekpoints( *this, i_mk_date + i_margin, priority, selected_tracks );
     }
     catch( std::exception const& e )
     {
         msg_Err( &sys.demuxer, "error during seek: \"%s\", aborting!", e.what() );
         return false;
+    }
+
+    if( b_continuation )
+    {
+        // joining the decoders' current state only works on a random access point //
+
+        for( SegmentSeeker::tracks_seekpoint_t::const_iterator it = seekpoints.begin(); it != seekpoints.end(); ++it )
+        {
+            tracks_map_t::iterator trackit = tracks.find( it->first );
+            if( trackit != tracks.end() && trackit->second->fmt.i_cat == VIDEO_ES &&
+                std::find( selected_tracks.begin(), selected_tracks.end(), it->first ) != selected_tracks.end() &&
+                ( it->second.pts < i_mk_date - i_margin || it->second.pts > i_mk_date + i_margin ) )
+                return false;
+        }
+
+        for( tracks_map_t::iterator it = tracks.begin(); it != tracks.end(); ++it )
+        {
+            mkv_track_t &track = *it->second;
+            track.i_skip_until_fpos = std::numeric_limits<uint64_t>::max();
+            track.i_last_dts        = VLC_TICK_INVALID;
+            track.b_chapter_end     = false;
+            track.i_continuation_start = VLC_TICK_0 + i_absolute_mk_date - i_margin;
+        }
     }
 
     // initialize seek information in order to set up playback //
@@ -889,7 +920,8 @@ bool matroska_segment_c::Seek( demux_t &demuxer, vlc_tick_t i_absolute_mk_date, 
 
     // propagate seek information //
 
-    sys.i_pcr           = VLC_TICK_INVALID;
+    if( !b_continuation )
+        sys.i_pcr       = VLC_TICK_INVALID;
     sys.i_pts           = VLC_TICK_0 + i_mk_seek_time + i_mk_time_offset;
     if (b_accurate)
         sys.i_start_pts = VLC_TICK_0 + i_absolute_mk_date;
@@ -906,7 +938,8 @@ bool matroska_segment_c::Seek( demux_t &demuxer, vlc_tick_t i_absolute_mk_date, 
       sys.i_start_pts, sys.i_pts, i_seek_position );
 
     // blocks that will be read and decoded but discarded until this pts
-    es_out_Control( sys.demuxer.out, ES_OUT_SET_NEXT_DISPLAY_TIME, sys.i_start_pts );
+    if( !b_continuation )
+        es_out_Control( sys.demuxer.out, ES_OUT_SET_NEXT_DISPLAY_TIME, sys.i_start_pts );
     return true;
 }
 

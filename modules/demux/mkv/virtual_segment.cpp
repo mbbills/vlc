@@ -462,6 +462,15 @@ bool virtual_segment_c::UpdateCurrentToChapter( demux_t & demux )
                         ( p_current_vchapter && &p_current_vchapter->segment != &p_cur_vchapter->segment ) ||
                         ( p_current_vchapter->p_chapter->i_end_time != p_cur_vchapter->p_chapter->i_start_time ))
                     {
+                        /* The next chapter starts on a random access point of
+                         * this segment: everything queued so far is still
+                         * wanted and the timeline continues, so keep the
+                         * decoders and the clock running. */
+                        if( p_current_vchapter != NULL &&
+                            &p_current_vchapter->segment == &p_cur_vchapter->segment &&
+                            Seek( demux, p_cur_vchapter->i_mk_virtual_start_time, p_cur_vchapter, true, true ) )
+                            return true;
+
                         /* Forcing reset pcr */
                         es_out_Control( demux.out, ES_OUT_RESET_PCR);
                         Seek( demux, p_cur_vchapter->i_mk_virtual_start_time, p_cur_vchapter );
@@ -516,8 +525,92 @@ bool virtual_chapter_c::EnterAndLeave( virtual_chapter_c *p_leaving_vchapter, bo
     return p_chapter->EnterAndLeave( p_leaving_vchapter->p_chapter, b_enter );
 }
 
+/* Longest time a block of another track is awaited past the end of a chapter */
+#define CHAPTER_TAIL_MAX VLC_TICK_FROM_SEC(2)
+
+static vlc_tick_t FrameMiddle( const mkv_track_t & track, vlc_tick_t i_pts )
+{
+    /* A frame belongs to the chapter holding its middle, so audio frames
+     * straddling a boundary are presented exactly once */
+    i_pts -= track.i_codec_delay;
+    if( track.fmt.i_cat == AUDIO_ES )
+        i_pts += track.i_default_duration / 2;
+    return i_pts;
+}
+
+/* Frames stored ahead of the start of a continued chapter: leading pictures
+ * depending on the previous stored chapter, or the audio frame ending there */
+bool virtual_segment_c::IsBeforeContinuation( const mkv_track_t & track, vlc_tick_t i_pts ) const
+{
+    return track.i_continuation_start != VLC_TICK_INVALID &&
+           ( track.fmt.i_cat == VIDEO_ES || track.fmt.i_cat == AUDIO_ES ) &&
+           FrameMiddle( track, i_pts ) < track.i_continuation_start;
+}
+
+/* Frames past the end of a chapter followed by a jump in the stored data */
+bool virtual_segment_c::IsPastChapterEnd( const mkv_track_t & track, vlc_tick_t i_pts )
+{
+    virtual_edition_c *p_vedition = CurrentEdition();
+
+    if( p_vedition == NULL || !p_vedition->b_ordered || p_current_vchapter == NULL )
+        return false;
+
+    const vlc_tick_t i_stop = p_current_vchapter->i_mk_virtual_stop_time;
+    if( i_stop < 0 || FrameMiddle( track, i_pts ) - VLC_TICK_0 < i_stop )
+        return false;
+
+    /* Stored contiguously with the next chapter: nothing is skipped */
+    const virtual_chapter_c *p_next = p_vedition->getChapterbyTimecode( i_stop );
+    return !( p_next != NULL && p_next != p_current_vchapter &&
+              &p_next->segment == &p_current_vchapter->segment &&
+              p_next->p_chapter != NULL && p_current_vchapter->p_chapter != NULL &&
+              p_current_vchapter->p_chapter->i_end_time == p_next->p_chapter->i_start_time );
+}
+
+bool virtual_segment_c::IsBlockOutsideChapter( demux_t & demuxer, mkv_track_t & track,
+                                               vlc_tick_t i_pts, unsigned i_frames )
+{
+    demux_sys_t & sys = *demuxer.p_sys;
+
+    if( IsBeforeContinuation( track, i_pts + ( i_frames - 1 ) * track.i_default_duration ) )
+        return true;
+
+    if( !IsPastChapterEnd( track, i_pts ) )
+        return false;
+
+    const vlc_tick_t i_stop = p_current_vchapter->i_mk_virtual_stop_time;
+
+    /* Blocks are stored in file order: leave the chapter only once all the
+     * selected tracks got past its end, or tracks without blocks would hold it
+     * forever. Blocks past the end are not part of the presentation. */
+    track.b_chapter_end = true;
+    bool b_done = FrameMiddle( track, i_pts ) - VLC_TICK_0 - i_stop >= CHAPTER_TAIL_MAX;
+    if( !b_done )
+    {
+        b_done = true;
+        matroska_segment_c::tracks_map_t &tracks = p_current_vchapter->segment.tracks;
+        for( matroska_segment_c::tracks_map_t::const_iterator it = tracks.begin(); it != tracks.end(); ++it )
+        {
+            const mkv_track_t &other = *it->second;
+            if( other.b_chapter_end || other.p_es == NULL ||
+                ( other.fmt.i_cat != VIDEO_ES && other.fmt.i_cat != AUDIO_ES ) )
+                continue;
+            bool b_selected = false;
+            es_out_Control( demuxer.out, ES_OUT_GET_ES_STATE, other.p_es, &b_selected );
+            if( b_selected )
+            {
+                b_done = false;
+                break;
+            }
+        }
+    }
+    if( b_done )
+        sys.i_pts = i_stop + VLC_TICK_0;
+    return true;
+}
+
 bool virtual_segment_c::Seek( demux_t & demuxer, vlc_tick_t i_mk_date,
-                              virtual_chapter_c *p_vchapter, bool b_precise )
+                              virtual_chapter_c *p_vchapter, bool b_precise, bool b_continuation )
 {
     demux_sys_t *p_sys = demuxer.p_sys;
 
@@ -555,7 +648,7 @@ bool virtual_segment_c::Seek( demux_t & demuxer, vlc_tick_t i_mk_date,
         {
             p_current_vchapter = p_vchapter;
 
-            return p_current_vchapter->segment.Seek( demuxer, i_mk_date, i_mk_time_offset, b_precise );
+            return p_current_vchapter->segment.Seek( demuxer, i_mk_date, i_mk_time_offset, b_precise, b_continuation );
         }
     }
     return false;

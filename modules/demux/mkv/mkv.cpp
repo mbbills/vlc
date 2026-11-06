@@ -550,6 +550,18 @@ static void BlockDecode( demux_t *p_demux, KaxBlock *block, KaxSimpleBlock *simp
             msg_Warn( p_demux, "Cannot read frame (too long or no frame)" );
             break;
         }
+
+        /* laced frames of a block crossing a chapter boundary */
+        if( i_number_frames > 1 && track.i_default_duration && i_pts != VLC_TICK_INVALID )
+        {
+            const vlc_tick_t i_mk_pts = i_pts - p_segment->pcr_shift + track.i_codec_delay;
+            if( p_sys->p_current_vsegment->IsBeforeContinuation( track, i_mk_pts ) ||
+                p_sys->p_current_vsegment->IsPastChapterEnd( track, i_mk_pts ) )
+            {
+                i_pts += track.i_default_duration;
+                continue;
+            }
+        }
         size_t extra_data = track.fmt.i_codec == VLC_CODEC_PRORES ? 8 : 0;
 
         if( track.i_compression_type == MATROSKA_COMPRESSION_HEADER &&
@@ -783,6 +795,15 @@ static int Demux( demux_t *p_demux)
 	        return VLC_DEMUXER_SUCCESS; // this block shall be ignored
             }
         }
+
+        const vlc_tick_t i_block_pts = p_sys->i_mk_chapter_time + VLC_TICK_0 +
+                                       VLC_TICK_FROM_NS(internal_block.GlobalTimecode());
+        if( p_vsegment->IsBlockOutsideChapter( *p_demux, track, i_block_pts, internal_block.NumberFrames() ) )
+        {
+            delete block;
+            delete additions;
+            return VLC_DEMUXER_SUCCESS;
+        }
     }
 
     if (UpdatePCR( p_demux ) != VLC_SUCCESS)
@@ -832,6 +853,8 @@ mkv_track_t::mkv_track_t(enum es_format_category_e es_cat) :
   ,f_timecodescale(1.0)
   ,i_last_dts(VLC_TICK_INVALID)
   ,i_skip_until_fpos(std::numeric_limits<uint64_t>::max())
+  ,b_chapter_end(false)
+  ,i_continuation_start(VLC_TICK_INVALID)
   ,f_fps(0)
   ,p_es(NULL)
   ,i_original_rate(0)

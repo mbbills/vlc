@@ -160,7 +160,10 @@ public:
     virtual_chapter_c * FindChapter( int64_t i_find_uid );
 
     bool UpdateCurrentToChapter( demux_t & demux );
-    bool Seek( demux_t & demuxer, vlc_tick_t i_mk_date, virtual_chapter_c *p_vchapter, bool b_precise = true );
+    bool Seek( demux_t & demuxer, vlc_tick_t i_mk_date, virtual_chapter_c *p_vchapter, bool b_precise = true, bool b_continuation = false );
+    bool IsBlockOutsideChapter( demux_t & demuxer, mkv_track_t & track, vlc_tick_t i_pts, unsigned i_frames );
+    bool IsBeforeContinuation( const mkv_track_t & track, vlc_tick_t i_pts ) const;
+    bool IsPastChapterEnd( const mkv_track_t & track, vlc_tick_t i_pts );
 private:
     void KeepTrackSelection( matroska_segment_c & old, matroska_segment_c & next );
 };

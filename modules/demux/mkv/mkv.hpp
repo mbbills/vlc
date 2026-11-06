@@ -230,6 +230,8 @@ class mkv_track_t
         float        f_timecodescale;
         vlc_tick_t   i_last_dts;
         uint64_t     i_skip_until_fpos; /*< any block before this fpos should be ignored */
+        bool         b_chapter_end; /*< a block past the end of the current ordered chapter was read */
+        vlc_tick_t   i_continuation_start; /*< pictures dated before this were not authored in the current chapter */
 
         /* video */
         es_format_t fmt;
