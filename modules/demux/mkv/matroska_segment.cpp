@@ -869,6 +869,29 @@ bool matroska_segment_c::Seek( demux_t &demuxer, vlc_tick_t i_absolute_mk_date, 
 
     if( b_continuation )
     {
+        // the search above starts at the video seekpoint, but the audio frame
+        // covering the date is often stored ahead of it, or laced in an earlier block //
+
+        for( SegmentSeeker::track_ids_t::const_iterator it = selected_tracks.begin(); it != selected_tracks.end(); ++it )
+        {
+            tracks_map_t::iterator trackit = tracks.find( *it );
+            if( trackit == tracks.end() || trackit->second->fmt.i_cat != AUDIO_ES )
+                continue;
+
+            SegmentSeeker::track_ids_t const audio_track( 1, *it );
+            try {
+                SegmentSeeker::tracks_seekpoint_t const audio =
+                    _seeker.get_seekpoints( *this, i_mk_date + i_margin, audio_track, audio_track );
+                SegmentSeeker::tracks_seekpoint_t::const_iterator found = audio.find( *it );
+                if( found != audio.end() )
+                    seekpoints[ *it ] = found->second;
+            }
+            catch( std::exception const& e )
+            {
+                msg_Warn( &sys.demuxer, "no audio seekpoint: \"%s\"", e.what() );
+            }
+        }
+
         // joining the decoders' current state only works on a random access point //
 
         for( SegmentSeeker::tracks_seekpoint_t::const_iterator it = seekpoints.begin(); it != seekpoints.end(); ++it )
