@@ -547,11 +547,13 @@ vlc_tick_t virtual_segment_c::BlockTime( vlc_tick_t i_mk_virtual_time ) const
 }
 
 /* Frames stored ahead of the start of a continued chapter: leading pictures
- * depending on the previous stored chapter, or the audio frame ending there */
+ * depending on the previous stored chapter, the audio frame ending there, or a
+ * subtitle starting there, which belongs to the stored chapter that was skipped */
 bool virtual_segment_c::IsBeforeContinuation( const mkv_track_t & track, vlc_tick_t i_pts ) const
 {
     return track.i_continuation_start != VLC_TICK_INVALID &&
-           ( track.fmt.i_cat == VIDEO_ES || track.fmt.i_cat == AUDIO_ES ) &&
+           ( track.fmt.i_cat == VIDEO_ES || track.fmt.i_cat == AUDIO_ES ||
+             track.fmt.i_cat == SPU_ES ) &&
            FrameMiddle( track, i_pts ) < track.i_continuation_start;
 }
 
