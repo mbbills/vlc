@@ -538,6 +538,14 @@ static vlc_tick_t FrameMiddle( const mkv_track_t & track, vlc_tick_t i_pts )
     return i_pts;
 }
 
+/* Block dates are shifted by the segment start (the first Cluster timestamp)
+ * so that playback starts at 0, chapter times are not: express a virtual
+ * chapter time on the block timeline before comparing it with a block */
+vlc_tick_t virtual_segment_c::BlockTime( vlc_tick_t i_mk_virtual_time ) const
+{
+    return i_mk_virtual_time - p_current_vchapter->segment.i_mk_start_time;
+}
+
 /* Frames stored ahead of the start of a continued chapter: leading pictures
  * depending on the previous stored chapter, or the audio frame ending there */
 bool virtual_segment_c::IsBeforeContinuation( const mkv_track_t & track, vlc_tick_t i_pts ) const
@@ -556,7 +564,7 @@ bool virtual_segment_c::IsPastChapterEnd( const mkv_track_t & track, vlc_tick_t 
         return false;
 
     const vlc_tick_t i_stop = p_current_vchapter->i_mk_virtual_stop_time;
-    if( i_stop < 0 || FrameMiddle( track, i_pts ) - VLC_TICK_0 < i_stop )
+    if( i_stop < 0 || FrameMiddle( track, i_pts ) - VLC_TICK_0 < BlockTime( i_stop ) )
         return false;
 
     /* Stored contiguously with the next chapter: nothing is skipped */
@@ -584,7 +592,7 @@ bool virtual_segment_c::IsBlockOutsideChapter( demux_t & demuxer, mkv_track_t & 
      * selected tracks got past its end, or tracks without blocks would hold it
      * forever. Blocks past the end are not part of the presentation. */
     track.b_chapter_end = true;
-    bool b_done = FrameMiddle( track, i_pts ) - VLC_TICK_0 - i_stop >= CHAPTER_TAIL_MAX;
+    bool b_done = FrameMiddle( track, i_pts ) - VLC_TICK_0 - BlockTime( i_stop ) >= CHAPTER_TAIL_MAX;
     if( !b_done )
     {
         b_done = true;

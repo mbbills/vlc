@@ -909,7 +909,8 @@ bool matroska_segment_c::Seek( demux_t &demuxer, vlc_tick_t i_absolute_mk_date, 
             track.i_skip_until_fpos = std::numeric_limits<uint64_t>::max();
             track.i_last_dts        = VLC_TICK_INVALID;
             track.b_chapter_end     = false;
-            track.i_continuation_start = VLC_TICK_0 + i_absolute_mk_date - i_margin;
+            // on the block timeline, which is shifted by the segment start
+            track.i_continuation_start = VLC_TICK_0 + i_absolute_mk_date - i_mk_start_time - i_margin;
         }
     }
 

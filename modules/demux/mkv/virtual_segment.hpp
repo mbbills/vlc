@@ -164,6 +164,7 @@ public:
     bool IsBlockOutsideChapter( demux_t & demuxer, mkv_track_t & track, vlc_tick_t i_pts, unsigned i_frames );
     bool IsBeforeContinuation( const mkv_track_t & track, vlc_tick_t i_pts ) const;
     bool IsPastChapterEnd( const mkv_track_t & track, vlc_tick_t i_pts );
+    vlc_tick_t BlockTime( vlc_tick_t i_mk_virtual_time ) const;
 private:
     void KeepTrackSelection( matroska_segment_c & old, matroska_segment_c & next );
 };
