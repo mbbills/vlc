@@ -1330,6 +1330,15 @@ static void ThreadFlush(vout_thread_t *vout, bool below, vlc_tick_t date)
     vout->p->step.timestamp = VLC_TICK_INVALID;
     vout->p->step.last      = VLC_TICK_INVALID;
 
+    /* A flush from the first valid date on (decoder flush, end of preroll,
+     * recycled vout) discards everything queued before it. That includes a
+     * forced picture whose date could not be converted (VLC_TICK_INVALID),
+     * e.g. one decoded from before a seek after the clock was reset: it
+     * belongs to the old position and would otherwise be shown, and
+     * composited with the new subtitles, after the flush. */
+    if (!below && date == VLC_TICK_INVALID + 1)
+        date = VLC_TICK_INVALID;
+
     ThreadFilterFlush(vout, false); /* FIXME too much */
 
     picture_t *last = vout->p->displayed.decoded;
