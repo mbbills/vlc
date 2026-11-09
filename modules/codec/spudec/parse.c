@@ -394,8 +394,11 @@ static int ParseControlSeq( decoder_t *p_dec, vlc_tick_t i_pts,
             /* */
             b_cmd_offset = false;
             b_cmd_alpha = false;
-            /* Get the control sequence date */
-            date = VLC_TICK_FROM_MS(GetWBE( &p_sys->buffer[i_index] ) * 11);
+            /* Get the control sequence date: SP_DCSQ_STM counts 1024/90000 s.
+             * Round up to the clock unit so that "start <= date < stop" against
+             * integer dates gives the same answer as the exact delay. */
+            date = ( (vlc_tick_t)GetWBE( &p_sys->buffer[i_index] ) * 1024 * CLOCK_FREQ
+                     + 90000 - 1 ) / 90000;
 
             /* Next offset */
             i_cur_seq = i_index;
