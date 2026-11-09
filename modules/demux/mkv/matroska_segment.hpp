@@ -143,6 +143,8 @@ public:
     void InformationCreate();
 
     bool Seek( demux_t &, vlc_tick_t i_mk_date, vlc_tick_t i_mk_time_offset, bool b_accurate, bool b_continuation = false );
+    void AddActiveSubtitleSeekpoints( SegmentSeeker::tracks_seekpoint_t &, const SegmentSeeker::track_ids_t & selected,
+                                      const SegmentSeeker::track_ids_t & priority, vlc_tick_t i_mk_date );
 
     int BlockGet( KaxBlock * &, KaxSimpleBlock * &, KaxBlockAdditions * &,
                   bool *, bool *, uint64_t *);

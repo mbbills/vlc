@@ -371,7 +371,11 @@ void send_Block( demux_t * p_demux, mkv_track_t * p_tk, block_t * p_block, unsig
         p_tk->i_last_dts = p_block->i_dts;
     }
 
-    if( !p_tk->b_no_duration )
+    /* VobSub has no forced block length, but a BlockDuration still says how
+     * long the packet is displayed. The core needs it to keep a subtitle that
+     * is still on screen at a seek target instead of dropping it as preroll. */
+    if( !p_tk->b_no_duration ||
+        ( p_tk->fmt.i_codec == VLC_CODEC_SPU && i_duration > 0 ) )
     {
         p_block->i_length = VLC_TICK_FROM_NS(i_duration * p_tk->f_timecodescale *
                                              p_segment->i_timescale) / i_number_frames;

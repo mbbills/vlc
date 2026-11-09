@@ -804,6 +804,76 @@ bool matroska_segment_c::LoadSeekHeadItem( const EbmlCallbacks & ClassInfos, int
     return true;
 }
 
+/* Longest time a subtitle is looked for before a seek target */
+#define SUBTITLE_SEEK_LOOKBACK VLC_TICK_FROM_SEC(10)
+
+void matroska_segment_c::AddActiveSubtitleSeekpoints( SegmentSeeker::tracks_seekpoint_t & seekpoints,
+                                                      const SegmentSeeker::track_ids_t & selected_tracks,
+                                                      const SegmentSeeker::track_ids_t & priority,
+                                                      vlc_tick_t i_mk_date )
+{
+    vlc_tick_t i_lower = i_mk_date - SUBTITLE_SEEK_LOOKBACK;
+
+    /* in an ordered edition, blocks stored before the chapter belong to another
+     * chapter, possibly another edition: never look past the chapter start */
+    virtual_segment_c *p_vsegment = sys.p_current_vsegment;
+    if( p_vsegment != NULL && p_vsegment->CurrentEdition() != NULL &&
+        p_vsegment->CurrentEdition()->b_ordered )
+    {
+        const virtual_chapter_c *p_vchapter = p_vsegment->CurrentChapter();
+        if( p_vchapter == NULL || p_vchapter->p_chapter == NULL || &p_vchapter->segment != this )
+            return;
+        i_lower = std::max( i_lower, p_vchapter->p_chapter->i_start_time );
+    }
+
+    SegmentSeeker::fptr_t i_end = std::numeric_limits<SegmentSeeker::fptr_t>::max();
+    for( SegmentSeeker::tracks_seekpoint_t::const_iterator it = seekpoints.begin(); it != seekpoints.end(); ++it )
+        i_end = std::min( i_end, it->second.fpos );
+
+    bool b_indexed = false;
+    for( SegmentSeeker::track_ids_t::const_iterator it = selected_tracks.begin(); it != selected_tracks.end(); ++it )
+    {
+        tracks_map_t::const_iterator trackit = tracks.find( *it );
+        if( trackit == tracks.end() || trackit->second->fmt.i_cat != SPU_ES )
+            continue;
+
+        SegmentSeeker::tracks_seekpoint_t::const_iterator found = seekpoints.find( *it );
+        if( found != seekpoints.end() && found->second.pts <= i_mk_date )
+            continue; /* a subtitle starting between the seekpoint and the target is read anyway */
+
+        try {
+            if( !b_indexed )
+            {
+                /* index the blocks stored from the lookback limit to the seekpoint */
+                SegmentSeeker::tracks_seekpoint_t const lower =
+                    _seeker.get_seekpoints( *this, i_lower, priority, priority );
+                SegmentSeeker::fptr_t i_start = i_end;
+                for( SegmentSeeker::tracks_seekpoint_t::const_iterator lit = lower.begin(); lit != lower.end(); ++lit )
+                    i_start = std::min( i_start, lit->second.fpos );
+                if( i_start < i_end )
+                    _seeker.index_range( *this, SegmentSeeker::Range( i_start, i_end ), i_mk_date );
+                b_indexed = true;
+            }
+        }
+        catch( std::exception const& e )
+        {
+            msg_Warn( &sys.demuxer, "no subtitle seekpoint: \"%s\"", e.what() );
+            return;
+        }
+
+        /* the latest subtitle block starting in [lookback, target] */
+        SegmentSeeker::seekpoints_t const & points = _seeker._tracks_seekpoints[ *it ];
+        for( SegmentSeeker::seekpoints_t::const_reverse_iterator pit = points.rbegin(); pit != points.rend(); ++pit )
+        {
+            if( pit->pts > i_mk_date || pit->fpos >= i_end )
+                continue;
+            if( pit->pts >= i_lower )
+                seekpoints[ *it ] = *pit;
+            break;
+        }
+    }
+}
+
 bool matroska_segment_c::Seek( demux_t &demuxer, vlc_tick_t i_absolute_mk_date, vlc_tick_t i_mk_time_offset, bool b_accurate, bool b_continuation )
 {
     SegmentSeeker::tracks_seekpoint_t seekpoints;
@@ -913,6 +983,13 @@ bool matroska_segment_c::Seek( demux_t &demuxer, vlc_tick_t i_absolute_mk_date, 
             track.i_continuation_start = VLC_TICK_0 + i_absolute_mk_date - i_mk_start_time - i_margin;
         }
     }
+
+    // a subtitle on screen at the target may have started before the video
+    // seekpoint: read its block too, the decoder drops it if it ended before
+    // the target, and the other tracks skip up to their own seekpoints //
+
+    if( !b_continuation && b_accurate && !seekpoints.empty() )
+        AddActiveSubtitleSeekpoints( seekpoints, selected_tracks, priority, i_mk_date );
 
     // initialize seek information in order to set up playback //
 
