@@ -19,6 +19,9 @@ Baseline: VideoLAN VLC 3.0.24, upstream commit
 | 5 | demux: mkv: compare ordered chapter limits on the block timeline | `phase3-block-timeline-on-phase2.patch` | `9f53b113b3b37b96e842be2d67344fd8d39870a4b3d91c9f4e8e0cc1374a54a9` |
 | 6 | demux: mkv: prime seek DTS on the block timeline | `phase3b-seek-dts-timeline.patch` | `2237629c107652e14422e3397cabb9cbb8845c146e20aefd948965c79a3ab3f1` |
 | 7 | demux: mkv: drop subtitle blocks stored ahead of a continued chapter | `phase4b-spu-continuation-ownership.patch` | `817c03092b9020e1acdbfcdbfcd2deaf28aa72d4591bf461542d1235760b53ea` |
+| 8 | codec: spudec: use the exact DVD tick for control sequence delays | `phase4c-a-spudec-dvd-clock.patch` (A) | `0bafceb424acbb69137a371ab1b1e0fa0e0b25bcd156bfc34434fc9ee55c4b72` |
+| 9 | vout: drop undated pictures on a full flush | `phase4c2-vout-flush-undated.patch` (C) | `87e106dfdcef25a97635b6c1e4ec1b0175e7d3cfec161f28ee6b281ee2e50897` |
+| 10 | demux: mkv: restore a subtitle already on screen after a seek | `phase4c-b-mkv-seek-active-subtitle.patch` (B) | `07ef166fee9631f6feec4fcc824d7f539fb7f8bdfa79522794d43dd363b2b940` |
 
 Commits 1 to 4 are the Phase 2 series, applied with `git am` from the
 supplied patch files, which keeps their author, dates and messages. Their
@@ -30,9 +33,27 @@ After commit 5, the three changed files match the lock's Phase 3 source hashes.
 After commit 7, `modules/demux/mkv/virtual_segment.cpp` has SHA-256
 `c64bd8db17bf13f6232ea39108f40cd0f8bd539776393d2be1ca193d0f43ce16`.
 
-Commit 3 is the only change outside the Matroska demuxer, in the video output
-core. A build needs the whole tree; the Matroska plugin alone on a stock core
-is not equivalent.
+Commits 8 to 10 are the Phase 4C corrections. Each commit is exactly its
+patch file. Source SHA-256 after them:
+
+| File | Before | After |
+|---|---|---|
+| `modules/codec/spudec/parse.c` (8) | `96ee4626…a427` | `4c13c80b2090dde44d8841921f353fbd3380001f4de488e7e9b8ec821534aa43` |
+| `src/video_output/video_output.c` (9) | `9b7a49f108565f2b49d591a2bd58bc2e5ae6a0691183d86cef19e038cc739256` | `2459f1d0ed98e1607bfefea8691ffb6bbe0855358c1f916c79906cff48a3057b` |
+| `modules/demux/mkv/matroska_segment.cpp` (10) | `fb68e2e3…5e0c` | `78b93a70f1b74e90d9124797b1d1ee46dd82dd202114a339dffbc07745ebe222` |
+| `modules/demux/mkv/matroska_segment.hpp` (10) | `21f8387d…2a12` | `513154220783085b43a25161202bfba331313952461afc4c0334be4c59373415` |
+| `modules/demux/mkv/util.cpp` (10) | `2ba5b92d…18cd39` | `af467f62b469308c2402dedd1e9b8a0540d67ed5fa48649ee02ea8d9aa29d874` |
+
+Dependencies: commit 8 (A, DVD clock) and commit 9 (C, full-flush undated
+pictures) are each usable on their own within their qualified profile.
+Commit 10 (B, active-subtitle restoration) requires commit 9 for the
+accepted configuration; without it, a picture from before the seek can be
+shown composited with the restored subtitle. Commit 9 is placed before
+commit 10 so the branch never contains B without C.
+
+Commits 3 and 9 change the video output core and commit 8 the DVD subtitle
+decoder; the rest is in the Matroska demuxer. A build needs the whole tree;
+the Matroska plugin alone on a stock core is not equivalent.
 
 ## What changed
 
@@ -62,6 +83,21 @@ is not equivalent.
   post-seek DTS on that same shifted timeline. Without them, a file whose first
   Cluster isn't at 0 shows wrong pictures at the first jump. With no input
   caching, a large start offset also loses pictures and audio after the jump.
+
+- **DVD subtitle clock (commit 8).** spudec converted control-sequence
+  delays as 11 ms per tick instead of 1024/90000 s, so starts, stops and
+  changes inside a subtitle packet came 3.3% early. It now uses the exact
+  tick, rounded up to the microsecond.
+- **Full flush (commit 9).** After a seek, a picture decoded from the old
+  position could be put as the forced first picture with no valid date, and
+  a full vout flush kept undated pictures. It was then shown after the flush
+  with the new position's subtitles. A full flush now discards it too.
+- **Seek into a subtitle on screen (commit 10).** On an accurate seek, each
+  selected subtitle track starts at its latest block starting at or before
+  the target, looking back up to 10 s and never before the current ordered
+  chapter's start. VobSub blocks now carry their BlockDuration as length, so
+  the core keeps a subtitle still active at the target and drops one that
+  has ended.
 
 ## Building
 
@@ -123,6 +159,73 @@ This qualifies subtitle ownership at seamless joins on synthetic material. It
 is not a claim of general VobSub correctness or of full-title DVD
 qualification. The fixtures and test harness are not part of this branch.
 
+### Phase 4C: subtitle clock, seek restoration and stale pictures, commits 8 to 10
+
+Same harness, extended with fixtures that put subtitle starts and stops
+exactly on, and a few milliseconds around, picture times and ordered-chapter
+transitions (T, T3), forced display (T2), and seeks into active subtitles
+(S): into shared and alternative intervals, backward, exactly on a start,
+after a subtitle ended, chapter navigation, within one chapter, repeated
+targets with identical timestamps, three seeks about 200 ms apart, and into
+a position with no subtitle. Ordered and plain files, first Cluster offsets
+0, 33 and 500 ms, default and zero caching. A per-picture metric counts
+every display event, including repeated renders.
+
+- Linux x64 (GCC 13, FFmpeg 6.1), producer evidence:
+  - Commit 8: the 120-case ownership matrix stays exact, and T2, T3 and S
+    match the exact DVD clock on every picture (72 of 72).
+  - Commit 10, with or without commits 8 and 9: after a seek, no subtitled
+    destination picture is missing its subtitle beyond the first one or two.
+    In the same seek sets, stock VLC, commit 6 and commit 7 lost 976, 992
+    and 2,360 subtitled destination pictures.
+  - Commit 10 without commit 9 showed a pre-seek picture composited with the
+    restored subtitle in about 15% of seeks (29 pictures in 15 of 98 runs,
+    21 in 13 of 70 on a second fixture set). Commit 9 brings this to 0 in
+    all 238 seek runs per build, with and without commit 8. In traced runs,
+    pictures rendered after their own generation's flush went from 51 to 0.
+  - Whole-picture hashes, picture order, decoded audio tones and sample
+    counts are identical with and without commits 8 to 10 on the control
+    files. No subtitle from another edition or angle appeared in any run.
+- Windows x64 (MSYS2 MINGW64), reported by the MovieCRITIC Phase 4C.3
+  qualification and not rerun for this document:
+  - 1,080 completed subtitle ownership and clock cases across five patched
+    configurations, and 1,428 completed seek cases across six builds.
+  - 120 of 120 ownership and 72 of 72 non-overlapping timing cases for each
+    relevant candidate.
+  - In the matched diagnostic set, commit 9 took commit 10's stale pre-flush
+    renders from 46 to 0 and stale pixel composites from 27 to 0.
+  - 72 exact video and audio control comparisons, 16 generated regressions
+    of earlier-phase content, ordinary generated DVD and Matroska lifecycle
+    controls, and 49 focused tests passed.
+  - Completed cases are not all passes: near-end seeks with default caching
+    that produce no destination video are failures, not successful seeks.
+
+This is experimental qualification on generated material. It is not a claim
+of general subtitle timing, general seek reliability, full-title DVD
+correctness or production readiness.
+
+## Phase 4C conditions on hold
+
+- The T fixture's overlapping subtitles are not normative for a DVD
+  decoder, and the SPU decoder thread holds a decoded subtitle until 500 ms
+  before its start, which can delay an earlier-starting subtitle that
+  arrives after it.
+- After a seek, the first destination picture can be shown before its
+  subtitle: the input's buffering does not wait for subtitle decoders, and
+  the first video picture is previewed at once. Pre-existing in stock VLC.
+- A rare race in the other direction: a new-position picture composited
+  with the previous position's subtitle (1 of 168 runs on a build without
+  commit 9; not fixed by commit 9, by construction).
+- Seeks near the end of a title with default caching can fail to produce
+  destination video.
+- Commit 10 restores only subtitles that started at most 10 s before the
+  target, and only VobSub blocks with a BlockDuration; otherwise behavior
+  is unchanged.
+- Stream output (transcode, remux) with commit 10's block lengths is
+  untested.
+- Other subtitle codecs, full-title authoring, Windows 7, interlaced
+  material and physical discs are not qualified.
+
 ## Known limits
 
 - Only frame-coded, closed-GOP MPEG-2 joins that start on an I picture are
@@ -134,13 +237,9 @@ qualification. The fixtures and test harness are not part of this branch.
   With zero caching, a single forced preview of the picture just before the
   seek target can also appear before playback resumes exactly at the target.
   This matches stock VLC.
-- VobSub timing: VLC's spudec counts control-sequence delays in 11 ms units
-  instead of 1024/90000 s, so subtitles end about 3.3% of their stop delay
-  early. This is stock VLC behavior, unchanged here.
-- Seeking into a subtitle that is already on screen does not show it until
-  the next subtitle starts, because the seek resumes after the block that
-  carries it. This matches stock VLC and a file without editions. How the
-  subtitle state should be restored after a seek is unresolved.
+- VobSub timing (11 ms ticks) and seeking into a subtitle already on screen
+  were limits of commits 1 to 7; commits 8 and 10 address them within the
+  conditions listed above.
 - A subtitle spanning a join that takes the fallback path is flushed with
   the decoders, as on stock VLC.
 - Exact-stop coverage is incomplete: only a few stops that land exactly on a
